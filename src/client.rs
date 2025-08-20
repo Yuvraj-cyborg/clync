@@ -1,4 +1,10 @@
 use copypasta::ClipboardProvider;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ClipboardData {
+    content: String,
+}
 
 pub async fn start_client(
     server_address: &str,
@@ -7,23 +13,77 @@ pub async fn start_client(
     let mut clipboard = copypasta::ClipboardContext::new()
         .map_err(|e| format!("Failed to create clipboard context: {}", e))?;
 
+    let mut last_local_content = String::new();
+    let mut last_server_content = String::new();
+
+    println!("Starting clipboard sync with {}", server_address);
+
     loop {
-        let content = clipboard
-            .get_contents()
-            .map_err(|e| format!("Failed to get clipboard contents: {}", e))?;
+        // Get current local clipboard content
+        let current_local_content = clipboard.get_contents().unwrap_or_else(|_| String::new());
 
-        let resp = client
-            .post(format!("{}/sync", server_address))
-            .json(&serde_json::json!({ "content": content }))
-            .send()
-            .await?;
+        // 1. Send local clipboard to server if it changed
+        if current_local_content != last_local_content && !current_local_content.is_empty() {
+            let resp = client
+                .post(format!("{}/sync", server_address))
+                .json(&serde_json::json!({ "content": current_local_content }))
+                .send()
+                .await;
 
-        if resp.status().is_success() {
-            println!("Clipboard synced successfully!");
-        } else {
-            eprintln!("Error syncing clipboard!");
+            match resp {
+                Ok(response) if response.status().is_success() => {
+                    println!(
+                        "Sent to server: \"{}\"",
+                        if current_local_content.len() > 50 {
+                            format!("{}...", &current_local_content[..50])
+                        } else {
+                            current_local_content.clone()
+                        }
+                    );
+                    last_local_content = current_local_content.clone();
+                    last_server_content = current_local_content.clone(); // Avoid immediate pull-back
+                }
+                Ok(_) => eprintln!("❌ Error sending clipboard to server"),
+                Err(e) => eprintln!("❌ Network error sending to server: {}", e),
+            }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        // 2. Get clipboard content from server
+        let server_resp = client.get(format!("{}/get", server_address)).send().await;
+
+        match server_resp {
+            Ok(response) if response.status().is_success() => {
+                if let Ok(server_data) = response.json::<ClipboardData>().await {
+                    // Update local clipboard if server has different content
+                    if server_data.content != last_server_content
+                        && server_data.content != current_local_content
+                        && !server_data.content.is_empty()
+                    {
+                        match clipboard.set_contents(server_data.content.clone()) {
+                            Ok(_) => {
+                                println!(
+                                    "Received from server: \"{}\"",
+                                    if server_data.content.len() > 50 {
+                                        format!("{}...", &server_data.content[..50])
+                                    } else {
+                                        server_data.content.clone()
+                                    }
+                                );
+                                last_server_content = server_data.content.clone();
+                                last_local_content = server_data.content; // Avoid immediate send-back
+                            }
+                            Err(e) => eprintln!("❌ Failed to set clipboard: {}", e),
+                        }
+                    }
+                }
+            }
+            Ok(response) if response.status().as_u16() == 404 => {
+                // Server has no clipboard data yet, this is normal
+            }
+            Ok(_) => eprintln!("❌ Unexpected response from server"),
+            Err(e) => eprintln!("❌ Network error getting from server: {}", e),
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
