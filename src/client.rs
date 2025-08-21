@@ -19,10 +19,8 @@ pub async fn start_client(
     println!("Starting clipboard sync with {}", server_address);
 
     loop {
-        // Get current local clipboard content
         let current_local_content = clipboard.get_contents().unwrap_or_else(|_| String::new());
 
-        // 1. Send local clipboard to server if it changed
         if current_local_content != last_local_content && !current_local_content.is_empty() {
             let resp = client
                 .post(format!("{}/sync", server_address))
@@ -48,7 +46,6 @@ pub async fn start_client(
             }
         }
 
-        // 2. Get clipboard content from server
         let server_resp = client.get(format!("{}/get", server_address)).send().await;
 
         match server_resp {
@@ -70,16 +67,14 @@ pub async fn start_client(
                                     }
                                 );
                                 last_server_content = server_data.content.clone();
-                                last_local_content = server_data.content; // Avoid immediate send-back
+                                last_local_content = server_data.content;
                             }
                             Err(e) => eprintln!("❌ Failed to set clipboard: {}", e),
                         }
                     }
                 }
             }
-            Ok(response) if response.status().as_u16() == 404 => {
-                // Server has no clipboard data yet, this is normal
-            }
+            Ok(response) if response.status().as_u16() == 404 => {}
             Ok(_) => eprintln!("❌ Unexpected response from server"),
             Err(e) => eprintln!("❌ Network error getting from server: {}", e),
         }

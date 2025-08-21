@@ -8,7 +8,6 @@ struct Cli {
     #[clap(subcommand)]
     command: Command,
 }
-
 #[derive(Parser)]
 enum Command {
     Server { port: u16 },
